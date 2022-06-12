@@ -1,0 +1,38 @@
+# Arch Linux packaging artifacts
+*.pkg.tar.zst
+*.pkg.tar.xz
+*.pkg.tar.gz
+*.log
+*.log.*
+
+# Build directories
+src/
+pkg/
+mutter/
+_build/
+build/
+subprojects/
+
+# C and Meson caches
+*.o
+*.so
+*.a
+*.p/
+meson-private/
+compile_commands.json
+
+# Python bytecode and caches
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Project local backups and runtime state
+backup/
+*.tmp
+
+# Local editor and OS files
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store

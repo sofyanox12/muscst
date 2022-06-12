@@ -1,0 +1,130 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2026
+From: Sofyan Pujas <sofyanox12@users.noreply.github.com>
+Date: Thu, 17 Sep 2026 00:00:00 +0800
+Subject: [PATCH] screen-cast: Dynamic JSON-based window actor buffer exclusion for monitor screencast
+
+Reads runtime state dynamically from ~/.config/muscst/state.json.
+Respects the "enabled" boolean flag to dynamically toggle buffer exclusion
+without requiring a restart of GNOME Shell. Preserves hardware
+cursor rendering on screencast streams.
+---
+ src/backends/meta-screen-cast-monitor-stream-src.c | 64 +++++++++++++++++++++-
+ src/compositor/meta-window-actor.c                 | 21 ++++++++++++++
+ 2 files changed, 85 insertions(+)
+
+diff --git a/src/backends/meta-screen-cast-monitor-stream-src.c b/src/backends/meta-screen-cast-monitor-stream-src.c
+index a1b2c3d..e4f5g6h 100644
+--- a/src/backends/meta-screen-cast-monitor-stream-src.c
++++ b/src/backends/meta-screen-cast-monitor-stream-src.c
+@@ -34,6 +34,10 @@
+ #include "backends/meta-stage-view.h"
+ #include "clutter/clutter-mutter.h"
+ #include "cogl/cogl.h"
++#include <glib.h>
++#include <glib/gstdio.h>
++#include <json-glib/json-glib.h>
++#include <stdio.h>
+ 
+ struct _MetaScreenCastMonitorStreamSrc
+ {
+@@ -43,6 +47,65 @@ struct _MetaScreenCastMonitorStreamSrc
+   MetaStageWatch *stage_watch;
+ };
+ 
++/* Dynamic window actor buffer exclusion check for screencast */
++gboolean
++meta_screen_cast_is_window_excluded (const char *wm_class, const char *app_id)
++{
++  static GHashTable *exclude_set = NULL;
++  static gint64 last_mtime = 0;
++  static gboolean filter_enabled = TRUE;
++  static char *config_path = NULL;
++  GStatBuf st;
++
++  if (G_UNLIKELY (!config_path))
++    config_path = g_build_filename (g_get_user_config_dir (), "muscst", "state.json", NULL);
++
++  if (g_stat (config_path, &st) != 0)
++    return FALSE;
++
++  if (st.st_mtime != last_mtime)
++    {
++      JsonParser *parser = json_parser_new ();
++      last_mtime = st.st_mtime;
++
++      if (json_parser_load_from_file (parser, config_path, NULL))
++        {
++          JsonNode *root = json_parser_get_root (parser);
++          if (JSON_NODE_HOLDS_OBJECT (root))
++            {
++              JsonObject *obj = json_node_get_object (root);
++              if (json_object_has_member (obj, "enabled"))
++                filter_enabled = json_object_get_boolean_member (obj, "enabled");
++
++              if (!exclude_set)
++                exclude_set = g_hash_table_new_full (g_str_hash, g_str_equal, g_free, NULL);
++              g_hash_table_remove_all (exclude_set);
++
++              if (json_object_has_member (obj, "exclude_classes"))
++                {
++                  JsonArray *arr = json_object_get_array_member (obj, "exclude_classes");
++                  guint len = json_array_get_length (arr);
++                  for (guint i = 0; i < len; i++)
++                    {
++                      const char *item = json_array_get_string_element (arr, i);
++                      if (item && *item)
++                        g_hash_table_insert (exclude_set, g_strdup (item), GINT_TO_POINTER (1));
++                    }
++                }
++            }
++        }
++      g_object_unref (parser);
++    }
++
++  if (!filter_enabled || !exclude_set)
++    return FALSE;
++
++  return ((wm_class && g_hash_table_contains (exclude_set, wm_class)) ||
++          (app_id && g_hash_table_contains (exclude_set, app_id)));
++}
++
+ G_DEFINE_TYPE (MetaScreenCastMonitorStreamSrc,
+                meta_screen_cast_monitor_stream_src,
+                META_TYPE_SCREEN_CAST_STREAM_SRC)
+ diff --git a/src/compositor/meta-window-actor.c b/src/compositor/meta-window-actor.c
+ index 9876543..1234567 100644
+ --- a/src/compositor/meta-window-actor.c
+ +++ b/src/compositor/meta-window-actor.c
+@@ -35,6 +35,9 @@
+ #include "core/window-private.h"
+ #include "meta/meta-enum-types.h"
+ 
++/* Prototype for exclusion check defined in monitor stream */
++gboolean meta_screen_cast_is_window_excluded (const char *wm_class, const char *app_id);
++
+ struct _MetaWindowActorPrivate
+ {
+   MetaWindow *window;
+@@ -450,6 +453,22 @@ meta_window_actor_paint (ClutterActor        *actor,
+ {
+   MetaWindowActor *self = META_WINDOW_ACTOR (actor);
+   MetaWindowActorPrivate *priv = meta_window_actor_get_instance_private (self);
++
++  /* If painting for a screencast FBO, inspect whether this actor is excluded */
++  if (clutter_paint_context_is_screencast (paint_context))
++    {
++      if (priv->window)
++        {
++          const char *wm_class = meta_window_get_wm_class (priv->window);
++          const char *app_id = meta_window_get_gtk_application_id (priv->window);
++
++          if (meta_screen_cast_is_window_excluded (wm_class, app_id))
++            return;
++        }
++    }
++
+   CLUTTER_ACTOR_CLASS (meta_window_actor_parent_class)->paint (actor, paint_context);
+ }
+ 
+-- 
+2.48.1

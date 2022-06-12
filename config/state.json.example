@@ -1,0 +1,7 @@
+{
+  "enabled": true,
+  "exclude_classes": [
+    "kitty",
+    "org.gnome.Nautilus"
+  ]
+}

@@ -1,0 +1,274 @@
+#!/usr/bin/env python3
+"""
+muscst - Mutter Screencast Buffer Exclusion Controller (Wayland)
+Standalone CLI & TUI utility to dynamically toggle window actor buffer exclusion
+and manage exclusion rules without restarting GNOME Shell.
+
+Maintainer: Sofyan Pujas <sofyanox12@users.noreply.github.com>
+License: GPL-2.0-or-later
+"""
+
+import argparse
+import curses
+import json
+import os
+import sys
+from pathlib import Path
+from typing import Any
+
+CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "muscst"
+STATE_FILE = CONFIG_DIR / "state.json"
+
+DEFAULT_STATE: dict[str, Any] = {
+    "enabled": True,
+    "exclude_classes": ["kitty", "org.gnome.Nautilus"]
+}
+
+MENU_ACTIONS = (
+    "Toggle Buffer Exclusion Filter (ON / OFF)",
+    "Add Window Class Manually",
+    "Remove Selected Window Class",
+    "Exit muscst"
+)
+
+
+def load_state() -> dict[str, Any]:
+    """Load configuration state from state.json, initializing if missing."""
+    if not STATE_FILE.exists():
+        save_state(DEFAULT_STATE)
+        return DEFAULT_STATE.copy()
+    try:
+        with open(STATE_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            return data if isinstance(data, dict) else DEFAULT_STATE.copy()
+    except (json.JSONDecodeError, OSError) as e:
+        print(f"[Warning] Failed to parse state file ({e}), using defaults.", file=sys.stderr)
+        return DEFAULT_STATE.copy()
+
+
+def save_state(state: dict[str, Any]) -> None:
+    """Safely persist state to disk with atomic replacement."""
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    tmp_file = STATE_FILE.with_suffix(".tmp")
+    with open(tmp_file, "w", encoding="utf-8") as f:
+        json.dump(state, f, indent=2)
+    tmp_file.replace(STATE_FILE)
+
+
+def cmd_status(args: argparse.Namespace) -> None:
+    """Display current buffer exclusion filter status and active rules."""
+    del args
+    state = load_state()
+    is_on = state.get("enabled", False)
+    status_str = "\033[92m● ACTIVE (Exclusion On)\033[0m" if is_on else "\033[91m○ INACTIVE (Pass-through)\033[0m"
+    classes = state.get("exclude_classes", [])
+
+    print("\n\033[1mmuscst - Mutter Screencast Buffer Exclusion Controller\033[0m")
+    print(f"Filter Status: {status_str}")
+    print(f"Config File  : {STATE_FILE}")
+    print(f"Active Rules : {len(classes)} window class(es) excluded")
+
+    if not classes:
+        print("\n  (No application classes currently excluded)\n")
+        return
+
+    print("\nExcluded Application Classes:")
+    for idx, cls_name in enumerate(classes, 1):
+        print(f"  {idx}. \033[96m{cls_name}\033[0m")
+    print()
+
+
+def cmd_set_enabled(enabled: bool) -> None:
+    """Set buffer exclusion filter state on or off."""
+    state = load_state()
+    state["enabled"] = enabled
+    save_state(state)
+    label = "\033[92mACTIVE\033[0m" if enabled else "\033[91mINACTIVE\033[0m"
+    print(f"[muscst] Screencast buffer exclusion filter {label} (Changes applied to next frame).")
+
+
+def cmd_toggle(args: argparse.Namespace) -> None:
+    """Toggle current buffer exclusion state."""
+    del args
+    state = load_state()
+    cmd_set_enabled(not state.get("enabled", False))
+
+
+def cmd_add(args: argparse.Namespace) -> None:
+    """Add a window class to the exclusion list."""
+    cls_name = args.window_class.strip()
+    if not cls_name:
+        print("[Error] Window class name cannot be empty.", file=sys.stderr)
+        return
+
+    state = load_state()
+    classes = state.setdefault("exclude_classes", [])
+    if cls_name in classes:
+        print(f"[Info] '{cls_name}' is already in the exclusion list.")
+        return
+
+    classes.append(cls_name)
+    save_state(state)
+    print(f"[muscst] Added '\033[96m{cls_name}\033[0m' to exclusion list.")
+
+
+def cmd_remove(args: argparse.Namespace) -> None:
+    """Remove a window class from the exclusion list."""
+    cls_name = args.window_class.strip()
+    state = load_state()
+    classes = state.get("exclude_classes", [])
+
+    if cls_name not in classes:
+        print(f"[Warning] '{cls_name}' was not found in the exclusion list.")
+        return
+
+    classes.remove(cls_name)
+    save_state(state)
+    print(f"[muscst] Removed '\033[96m{cls_name}\033[0m' from exclusion list.")
+
+
+def tui_draw_menu(stdscr: curses.window, state: dict[str, Any], selected_idx: int) -> None:
+    """Draw interactive curses TUI screen."""
+    stdscr.clear()
+    h, w = stdscr.getmaxyx()
+    if h < 14 or w < 50:
+        stdscr.addstr(0, 0, "Terminal window too small (min: 50x14).")
+        stdscr.refresh()
+        return
+
+    title = " muscst - Screencast Buffer Exclusion Controller (Wayland) "
+    stdscr.attron(curses.A_BOLD)
+    stdscr.addstr(1, max(2, (w - len(title)) // 2), title)
+    stdscr.attroff(curses.A_BOLD)
+
+    status_text = "[ ACTIVE / ON ]" if state.get("enabled", False) else "[ INACTIVE / OFF ]"
+    stdscr.addstr(3, 4, f"Filter Status : {status_text}", curses.A_BOLD)
+    stdscr.addstr(4, 4, f"Config Path   : {STATE_FILE}")
+
+    stdscr.addstr(6, 4, "Excluded Window Classes:", curses.A_UNDERLINE)
+    classes = state.get("exclude_classes", [])
+    row = 7
+    for cls_name in classes[:6]:
+        stdscr.addstr(row, 6, f"• {cls_name}")
+        row += 1
+    if len(classes) > 6:
+        stdscr.addstr(row, 6, f"... and {len(classes) - 6} more")
+        row += 1
+
+    stdscr.addstr(row + 1, 4, "Actions:", curses.A_UNDERLINE)
+    for idx, label in enumerate(MENU_ACTIONS):
+        item_row = row + 2 + idx
+        if idx == selected_idx:
+            stdscr.attron(curses.A_REVERSE | curses.A_BOLD)
+            stdscr.addstr(item_row, 6, f"> {label} <")
+            stdscr.attroff(curses.A_REVERSE | curses.A_BOLD)
+        else:
+            stdscr.addstr(item_row, 8, label)
+
+    stdscr.addstr(h - 2, 4, "Use [↑/↓] to navigate, [Enter] to select, [Q] to quit.")
+    stdscr.refresh()
+
+
+def _tui_handle_enter(stdscr: curses.window, state: dict[str, Any], selected_idx: int) -> bool:
+    """Handle menu item execution. Returns False if TUI should exit."""
+    if selected_idx == 0:
+        state["enabled"] = not state.get("enabled", False)
+        save_state(state)
+        return True
+
+    if selected_idx == 1:
+        _tui_prompt_add_class(stdscr, state)
+        return True
+
+    if selected_idx == 2:
+        classes = state.get("exclude_classes", [])
+        if classes:
+            classes.pop()
+            save_state(state)
+        return True
+
+    return False
+
+
+def _tui_prompt_add_class(stdscr: curses.window, state: dict[str, Any]) -> None:
+    """Prompt user for window class input in TUI mode."""
+    curses.echo()
+    curses.curs_set(1)
+    prompt_row = max(0, curses.LINES - 4)
+    stdscr.addstr(prompt_row, 4, "Enter window class name: " + " " * 30)
+    stdscr.move(prompt_row, 29)
+    raw_input = stdscr.getstr().decode("utf-8", errors="replace").strip()
+    curses.noecho()
+    curses.curs_set(0)
+
+    if raw_input and raw_input not in state.get("exclude_classes", []):
+        state.setdefault("exclude_classes", []).append(raw_input)
+        save_state(state)
+
+
+def run_tui(stdscr: curses.window) -> None:
+    """TUI interactive main loop."""
+    curses.curs_set(0)
+    selected_idx = 0
+    state = load_state()
+
+    while True:
+        tui_draw_menu(stdscr, state, selected_idx)
+        key = stdscr.getch()
+
+        if key in (ord('q'), ord('Q'), 27):
+            break
+        if key == curses.KEY_UP:
+            selected_idx = (selected_idx - 1) % len(MENU_ACTIONS)
+        elif key == curses.KEY_DOWN:
+            selected_idx = (selected_idx + 1) % len(MENU_ACTIONS)
+        elif key in (curses.KEY_ENTER, 10, 13):
+            if not _tui_handle_enter(stdscr, state, selected_idx):
+                break
+
+
+def build_arg_parser() -> argparse.ArgumentParser:
+    """Construct CLI command argument parser."""
+    parser = argparse.ArgumentParser(
+        description="muscst: Mutter Screencast Buffer Exclusion Controller for GNOME Wayland",
+        formatter_class=argparse.RawTextHelpFormatter
+    )
+    subparsers = parser.add_subparsers(dest="command", help="Command to execute")
+
+    subparsers.add_parser("status", help="Print current buffer filter status and active rules")
+    subparsers.add_parser("on", help="Enable screencast buffer exclusion filter")
+    subparsers.add_parser("off", help="Disable screencast buffer exclusion filter")
+    subparsers.add_parser("toggle", help="Toggle buffer exclusion filter on/off")
+    subparsers.add_parser("ui", help="Launch interactive curses TUI")
+
+    add_parser = subparsers.add_parser("add", help="Add window class to exclusion list")
+    add_parser.add_argument("window_class", help="Window class name (e.g. kitty, org.gnome.Nautilus)")
+
+    remove_parser = subparsers.add_parser("remove", help="Remove window class from exclusion list")
+    remove_parser.add_argument("window_class", help="Window class name to remove")
+
+    return parser
+
+
+def main() -> None:
+    """CLI entry point and command router."""
+    parser = build_arg_parser()
+    args = parser.parse_args()
+
+    handlers = {
+        "status": cmd_status,
+        "on": lambda _: cmd_set_enabled(True),
+        "off": lambda _: cmd_set_enabled(False),
+        "toggle": cmd_toggle,
+        "add": cmd_add,
+        "remove": cmd_remove,
+    }
+
+    if args.command in handlers:
+        handlers[args.command](args)
+    else:
+        curses.wrapper(run_tui)
+
+
+if __name__ == "__main__":
+    main()

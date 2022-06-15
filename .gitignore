@@ -9,9 +9,15 @@
 src/
 pkg/
 mutter/
+gvdb/
 _build/
 build/
 subprojects/
+
+# Root symlinks for makepkg build resolution
+/0001-screencast-window-exclusion.patch
+/muscst
+/state.json.example
 
 # C and Meson caches
 *.o

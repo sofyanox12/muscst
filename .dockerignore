@@ -1,0 +1,6 @@
+.git
+mutter/
+src/
+pkg/
+gvdb/
+*.pkg.tar.zst

@@ -1,5 +1,5 @@
 diff --git a/clutter/clutter/clutter-paint-context.h b/clutter/clutter/clutter-paint-context.h
-index 321c86e..db7bceb 100644
+index 321c86ee47..db7bceb511 100644
 --- a/clutter/clutter/clutter-paint-context.h
 +++ b/clutter/clutter/clutter-paint-context.h
 @@ -34,6 +34,7 @@ typedef enum _ClutterPaintFlag
@@ -11,7 +11,7 @@ index 321c86e..db7bceb 100644
  
  #define CLUTTER_TYPE_PAINT_CONTEXT (clutter_paint_context_get_type ())
 diff --git a/src/backends/meta-screen-cast-monitor-stream-src.c b/src/backends/meta-screen-cast-monitor-stream-src.c
-index eea0fd1..ba9ddc3 100644
+index eea0fd1ecb..ba9ddc3f02 100644
 --- a/src/backends/meta-screen-cast-monitor-stream-src.c
 +++ b/src/backends/meta-screen-cast-monitor-stream-src.c
 @@ -37,6 +37,92 @@
@@ -138,7 +138,7 @@ index eea0fd1..ba9ddc3 100644
  
        blending_color_state = clutter_color_state_get_blending (target_color_state,
 diff --git a/src/backends/meta-screen-cast-monitor-stream-src.h b/src/backends/meta-screen-cast-monitor-stream-src.h
-index 5551530..8459bd1 100644
+index 5551530137..8459bd1d79 100644
 --- a/src/backends/meta-screen-cast-monitor-stream-src.h
 +++ b/src/backends/meta-screen-cast-monitor-stream-src.h
 @@ -33,3 +33,9 @@ G_DECLARE_FINAL_TYPE (MetaScreenCastMonitorStreamSrc,
@@ -151,8 +151,22 @@ index 5551530..8459bd1 100644
 +gboolean meta_screen_cast_is_window_excluded (const char *wm_class,
 +                                             const char *app_id,
 +                                             const char *wm_instance);
+diff --git a/src/compositor/meta-background-content.c b/src/compositor/meta-background-content.c
+index 50abb23739..2d4f5c678d 100644
+--- a/src/compositor/meta-background-content.c
++++ b/src/compositor/meta-background-content.c
+@@ -741,7 +741,8 @@ meta_background_content_paint_content (ClutterContent      *content,
+         }
+     }
+ 
+-  if (self->unobscured_region)
++  if (self->unobscured_region &&
++      !(clutter_paint_context_get_paint_flags (paint_context) & CLUTTER_PAINT_FLAG_SCREENCAST))
+     mtk_region_intersect (region, self->unobscured_region);
+ 
+   /* region is now in actor space */
 diff --git a/src/compositor/meta-window-actor.c b/src/compositor/meta-window-actor.c
-index f09659b..99b7ad3 100644
+index f09659b8ea..df8336ffeb 100644
 --- a/src/compositor/meta-window-actor.c
 +++ b/src/compositor/meta-window-actor.c
 @@ -24,6 +24,7 @@
@@ -163,10 +177,31 @@ index f09659b..99b7ad3 100644
  #include "compositor/compositor-private.h"
  #include "compositor/meta-shaped-texture-private.h"
  #include "compositor/meta-surface-actor.h"
-@@ -191,6 +192,31 @@ meta_window_actor_unmap (ClutterActor *actor)
+@@ -191,6 +192,42 @@ meta_window_actor_unmap (ClutterActor *actor)
    update_is_effectively_visible (window_actor);
  }
  
++static gboolean
++meta_window_actor_is_excluded (MetaWindowActor *self)
++{
++  MetaWindowActorPrivate *priv = meta_window_actor_get_instance_private (self);
++  MetaWindow *window = priv->window;
++
++  while (window)
++    {
++      const char *wm_class = meta_window_get_wm_class (window);
++      const char *app_id = meta_window_get_gtk_application_id (window);
++      const char *wm_instance = meta_window_get_wm_class_instance (window);
++
++      if (meta_screen_cast_is_window_excluded (wm_class, app_id, wm_instance))
++        return TRUE;
++
++      window = meta_window_get_transient_for (window);
++    }
++
++  return FALSE;
++}
++
 +static void
 +meta_window_actor_paint (ClutterActor        *actor,
 +                         ClutterPaintContext *paint_context)
@@ -175,18 +210,8 @@ index f09659b..99b7ad3 100644
 +
 +  if (flags & CLUTTER_PAINT_FLAG_SCREENCAST)
 +    {
-+      MetaWindowActor *self = META_WINDOW_ACTOR (actor);
-+      MetaWindowActorPrivate *priv = meta_window_actor_get_instance_private (self);
-+
-+      if (priv->window)
-+        {
-+          const char *wm_class = meta_window_get_wm_class (priv->window);
-+          const char *app_id = meta_window_get_gtk_application_id (priv->window);
-+          const char *wm_instance = meta_window_get_wm_class_instance (priv->window);
-+
-+          if (meta_screen_cast_is_window_excluded (wm_class, app_id, wm_instance))
-+            return;
-+        }
++      if (meta_window_actor_is_excluded (META_WINDOW_ACTOR (actor)))
++        return;
 +    }
 +
 +  CLUTTER_ACTOR_CLASS (meta_window_actor_parent_class)->paint (actor, paint_context);
@@ -195,7 +220,7 @@ index f09659b..99b7ad3 100644
  static void
  meta_window_actor_class_init (MetaWindowActorClass *klass)
  {
-@@ -204,6 +230,7 @@ meta_window_actor_class_init (MetaWindowActorClass *klass)
+@@ -204,6 +241,7 @@ meta_window_actor_class_init (MetaWindowActorClass *klass)
  
    actor_class->map = meta_window_actor_map;
    actor_class->unmap = meta_window_actor_unmap;
@@ -203,3 +228,17 @@ index f09659b..99b7ad3 100644
  
    klass->get_scanout_candidate = meta_window_actor_real_get_scanout_candidate;
    klass->assign_surface_actor = meta_window_actor_real_assign_surface_actor;
+diff --git a/src/compositor/meta-window-group.c b/src/compositor/meta-window-group.c
+index 0b29409f53..de39a5c084 100644
+--- a/src/compositor/meta-window-group.c
++++ b/src/compositor/meta-window-group.c
+@@ -66,6 +66,9 @@ meta_window_group_paint (ClutterActor        *actor,
+   if (!redraw_clip)
+     goto fail;
+ 
++  if (clutter_paint_context_get_paint_flags (paint_context) & CLUTTER_PAINT_FLAG_SCREENCAST)
++    goto fail;
++
+   /* Normally we expect an actor to be drawn at it's position on the screen.
+    * However, if we're inside the paint of a ClutterClone, that won't be the
+    * case and we need to compensate.

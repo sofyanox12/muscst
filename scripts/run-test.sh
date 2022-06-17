@@ -7,7 +7,7 @@ set -euo pipefail
 
 echo "==> [test] Locating built package..."
 shopt -s nullglob
-PACKAGE_FILES=(/workspace/mutter-muscst-*.pkg.tar.zst)
+PACKAGE_FILES=(/workspace/mutter-muscst-[0-9]*.pkg.tar.zst)
 shopt -u nullglob
 
 if [ ${#PACKAGE_FILES[@]} -eq 0 ]; then
@@ -31,6 +31,8 @@ echo "==> [test] Testing CLI controller operations..."
 /workspace/bin/muscst remove "kitty"
 
 echo "==> [test] Validating Mutter headless initialization..."
+export XDG_RUNTIME_DIR="/tmp/runtime-$(id -u)"
+mkdir -p -m 0700 "${XDG_RUNTIME_DIR}"
 dbus-run-session mutter --headless --virtual-monitor 1280x720 --wayland &
 MUTTER_PID=$!
 sleep 3

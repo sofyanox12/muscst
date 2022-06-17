@@ -4,7 +4,7 @@
 pkgname=mutter-muscst
 _pkgname=mutter
 pkgver=50.2
-pkgrel=2
+pkgrel=3
 pkgdesc="Window manager and compositor for GNOME with screencast window buffer exclusion & muscst CLI controller (WIP)"
 url="https://gitlab.gnome.org/GNOME/mutter"
 arch=(x86_64)
@@ -74,6 +74,7 @@ makedepends=(
   glib2-devel
   gobject-introspection
   meson
+  python-docutils
   sysprof
   wayland-protocols
 )
@@ -85,13 +86,15 @@ provides=(
 conflicts=(mutter)
 source=(
   "git+https://gitlab.gnome.org/GNOME/mutter.git#tag=${pkgver}"
-  "patches/0001-screencast-window-exclusion.patch"
-  "bin/muscst"
-  "config/state.json.example"
+  "git+https://gitlab.gnome.org/GNOME/gvdb.git#commit=b54bc5da25127ef416858a3ad92e57159ff565b3"
+  "0001-screencast-window-exclusion.patch"
+  "muscst"
+  "state.json.example"
 )
 sha256sums=(
   'SKIP'
-  '8a04b981a9ce6bb1f460f4056672fc3844c25116b76d4e5c4f4b7045e6107be1'
+  'SKIP'
+  '0a5eb577c029f3e5580d426333e3898cf1f64b15eb23aa3c9be0c6dbe4b37b56'
   '5d571159bf2b0f91e6abe461c823d82008b78fc5144cb327e9e2db961b478149'
   '78850cad3298011aadb7c50416d4fd88182790442e6f380b8c758423ae70bf3d'
 )
@@ -101,16 +104,21 @@ prepare() {
 
   echo "Applying screencast buffer exclusion patch..."
   patch -Np1 -i "${srcdir}/0001-screencast-window-exclusion.patch"
+
+  # Resolve Pango 1.58+ autoptr redefinition conflict
+  sed -i '/G_DEFINE_AUTOPTR_CLEANUP_FUNC (PangoRenderer, g_object_unref)/d' clutter/clutter/pango/clutter-pango-private.h
 }
 
 build() {
   local meson_options=(
     -D docs=false
-    -D tests=false
-    -D sm=false
-    -D profiling=false
+    -D tests=disabled
+    -D profiler=false
     -D installed_tests=false
   )
+
+  # Inject gvdb
+  export MESON_PACKAGE_CACHE_DIR="$srcdir"
 
   arch-meson ${_pkgname} build "${meson_options[@]}"
   meson compile -C build

@@ -1,7 +1,7 @@
 pkgbase = mutter-muscst
 	pkgdesc = Window manager and compositor for GNOME with screencast window buffer exclusion & muscst CLI controller (WIP)
 	pkgver = 50.2
-	pkgrel = 2
+	pkgrel = 3
 	url = https://gitlab.gnome.org/GNOME/mutter
 	arch = x86_64
 	license = GPL-2.0-or-later
@@ -11,6 +11,7 @@ pkgbase = mutter-muscst
 	makedepends = glib2-devel
 	makedepends = gobject-introspection
 	makedepends = meson
+	makedepends = python-docutils
 	makedepends = sysprof
 	makedepends = wayland-protocols
 	depends = at-spi2-core
@@ -74,11 +75,13 @@ pkgbase = mutter-muscst
 	provides = libmutter-18.so
 	conflicts = mutter
 	source = git+https://gitlab.gnome.org/GNOME/mutter.git#tag=50.2
-	source = patches/0001-screencast-window-exclusion.patch
-	source = bin/muscst
-	source = config/state.json.example
+	source = git+https://gitlab.gnome.org/GNOME/gvdb.git#commit=b54bc5da25127ef416858a3ad92e57159ff565b3
+	source = 0001-screencast-window-exclusion.patch
+	source = muscst
+	source = state.json.example
 	sha256sums = SKIP
-	sha256sums = 8a04b981a9ce6bb1f460f4056672fc3844c25116b76d4e5c4f4b7045e6107be1
+	sha256sums = SKIP
+	sha256sums = 0a5eb577c029f3e5580d426333e3898cf1f64b15eb23aa3c9be0c6dbe4b37b56
 	sha256sums = 5d571159bf2b0f91e6abe461c823d82008b78fc5144cb327e9e2db961b478149
 	sha256sums = 78850cad3298011aadb7c50416d4fd88182790442e6f380b8c758423ae70bf3d
 

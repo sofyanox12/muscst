@@ -10,6 +10,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 echo "==> [muscst] Preparing isolated Arch build environment..."
+ln -sf patches/0001-screencast-window-exclusion.patch "${ROOT_DIR}/0001-screencast-window-exclusion.patch"
+ln -sf bin/muscst "${ROOT_DIR}/muscst"
+ln -sf config/state.json.example "${ROOT_DIR}/state.json.example"
 docker build -t muscst-builder -f "${ROOT_DIR}/Dockerfile.build" "${ROOT_DIR}"
 
 echo "==> [muscst] Compiling package inside container..."

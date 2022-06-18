@@ -15,7 +15,7 @@ echo "NOTE: This tool is in active development. Intended only for isolated test 
 cd "${ROOT_DIR}"
 
 shopt -s nullglob
-PACKAGE_FILES=("${ROOT_DIR}"/mutter-muscst-*.pkg.tar.zst)
+PACKAGE_FILES=("${ROOT_DIR}"/mutter-muscst-[0-9]*.pkg.tar.zst)
 shopt -u nullglob
 
 if [ ${#PACKAGE_FILES[@]} -eq 0 ]; then
@@ -37,8 +37,8 @@ echo "Backing up current official package reference..."
 mkdir -p "${ROOT_DIR}/backup"
 pacman -Q mutter > "${ROOT_DIR}/backup/previous_mutter_version.txt" || true
 
-echo "Installing patched mutter-muscst package..."
-sudo pacman -U --noconfirm "${PACKAGE_FILE}"
+echo "Installing patched mutter-muscst package (confirm 'y' when asked to remove mutter)..."
+sudo pacman -U "${PACKAGE_FILE}"
 
 echo ""
 echo "==> [SUCCESS] mutter-muscst test package installed."

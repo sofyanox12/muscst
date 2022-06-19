@@ -4,7 +4,7 @@
 pkgname=mutter-muscst
 _pkgname=mutter
 pkgver=50.2
-pkgrel=3
+pkgrel=4
 pkgdesc="Window manager and compositor for GNOME with screencast window buffer exclusion & muscst CLI controller (WIP)"
 url="https://gitlab.gnome.org/GNOME/mutter"
 arch=(x86_64)
@@ -94,7 +94,7 @@ source=(
 sha256sums=(
   'SKIP'
   'SKIP'
-  '0a5eb577c029f3e5580d426333e3898cf1f64b15eb23aa3c9be0c6dbe4b37b56'
+  '2b5b657abc940b83033a6e9024f26e8d2cbbef73e8a2fabb98ccdd7dcc1a9d0b'
   '5d571159bf2b0f91e6abe461c823d82008b78fc5144cb327e9e2db961b478149'
   '78850cad3298011aadb7c50416d4fd88182790442e6f380b8c758423ae70bf3d'
 )

@@ -10,14 +10,102 @@ index 321c86ee47..db7bceb511 100644
  } ClutterPaintFlag;
  
  #define CLUTTER_TYPE_PAINT_CONTEXT (clutter_paint_context_get_type ())
+diff --git a/src/backends/meta-cursor-renderer.c b/src/backends/meta-cursor-renderer.c
+index 3ccd48c8b2..28d9284415 100644
+--- a/src/backends/meta-cursor-renderer.c
++++ b/src/backends/meta-cursor-renderer.c
+@@ -23,10 +23,12 @@
+ #include "config.h"
+ 
+ #include "backends/meta-cursor-renderer.h"
++#include "backends/meta-cursor-xcursor.h"
+ 
+ #include <math.h>
+ 
+ #include "backends/meta-backend-private.h"
++#include "backends/meta-cursor-tracker-private.h"
+ #include "backends/meta-logical-monitor-private.h"
+ #include "backends/meta-stage-private.h"
+ #include "clutter/clutter.h"
+@@ -71,6 +73,9 @@ struct _MetaCursorRendererPrivate
+ };
+ typedef struct _MetaCursorRendererPrivate MetaCursorRendererPrivate;
+ 
++static float find_highest_logical_monitor_scale (MetaCursorRenderer *renderer,
++                                                 ClutterCursor      *cursor);
++
+ enum
+ {
+   CURSOR_PAINTED,
+@@ -174,6 +179,56 @@ meta_cursor_renderer_update_stage_overlay (MetaCursorRenderer *renderer,
+         }
+     }
+ 
++  /* Also prepare fallback default cursor for screencast overlay */
++  MetaCursorTracker *cursor_tracker = meta_backend_get_cursor_tracker (priv->backend);
++  g_autoptr (ClutterCursor) default_cursor = NULL;
++  CoglTexture *default_texture = NULL;
++  graphene_rect_t default_dst_rect = GRAPHENE_RECT_INIT_ZERO;
++  graphene_matrix_t default_matrix;
++
++  graphene_matrix_init_identity (&default_matrix);
++  if (cursor_tracker)
++    default_cursor = CLUTTER_CURSOR (meta_cursor_xcursor_get (CLUTTER_CURSOR_DEFAULT, cursor_tracker));
++
++  if (default_cursor)
++    {
++      float def_scale = find_highest_logical_monitor_scale (renderer, default_cursor);
++      clutter_cursor_prepare_at (default_cursor,
++                                 MAX (1, def_scale),
++                                 (int) priv->current_x,
++                                 (int) priv->current_y);
++
++      default_dst_rect = meta_cursor_renderer_calculate_rect (renderer, default_cursor);
++      align_cursor_position (renderer, &default_dst_rect);
++
++      default_texture = clutter_cursor_get_texture (default_cursor, NULL, NULL);
++      if (default_texture)
++        {
++          int cursor_width, cursor_height;
++          float cursor_scale;
++          MtkMonitorTransform cursor_transform;
++          const graphene_rect_t *src_rect;
++
++          cursor_width = cogl_texture_get_width (default_texture);
++          cursor_height = cogl_texture_get_height (default_texture);
++          cursor_scale = clutter_cursor_get_texture_scale (default_cursor);
++          cursor_transform = clutter_cursor_get_texture_transform (default_cursor);
++          src_rect = clutter_cursor_get_viewport_src_rect (default_cursor);
++          mtk_compute_viewport_matrix (&default_matrix,
++                                       cursor_width,
++                                       cursor_height,
++                                       cursor_scale,
++                                       cursor_transform,
++                                       src_rect);
++        }
++    }
++
++  meta_stage_update_cursor_overlay_default (META_STAGE (stage),
++                                            priv->stage_overlay,
++                                            default_texture,
++                                            &default_matrix,
++                                            &default_dst_rect);
++
+   meta_overlay_set_visible (priv->stage_overlay, priv->needs_overlay);
+   meta_stage_update_cursor_overlay (META_STAGE (stage),
+                                     priv->stage_overlay,
 diff --git a/src/backends/meta-screen-cast-monitor-stream-src.c b/src/backends/meta-screen-cast-monitor-stream-src.c
-index eea0fd1ecb..ba9ddc3f02 100644
+index eea0fd1ecb..4060451537 100644
 --- a/src/backends/meta-screen-cast-monitor-stream-src.c
 +++ b/src/backends/meta-screen-cast-monitor-stream-src.c
-@@ -37,6 +37,92 @@
+@@ -37,6 +37,149 @@
  #include "clutter/clutter-mutter.h"
  #include "core/boxes-private.h"
  #include "core/meta-debug-control-private.h"
++#include "core/window-private.h"
++#include "meta/window.h"
++#include "backends/meta-cursor-xcursor.h"
++#include "compositor/meta-window-actor-private.h"
 +#include <glib.h>
 +#include <glib/gstdio.h>
 +
@@ -104,10 +192,79 @@ index eea0fd1ecb..ba9ddc3f02 100644
 +          (app_id && g_hash_table_contains (exclude_set, app_id)) ||
 +          (wm_instance && g_hash_table_contains (exclude_set, wm_instance)));
 +}
++
++gboolean
++meta_screen_cast_is_meta_window_excluded (MetaWindow *window)
++{
++  while (window)
++    {
++      const char *wm_class = meta_window_get_wm_class (window);
++      const char *app_id = meta_window_get_gtk_application_id (window);
++      const char *wm_instance = meta_window_get_wm_class_instance (window);
++
++      if (meta_screen_cast_is_window_excluded (wm_class, app_id, wm_instance))
++        return TRUE;
++
++      window = meta_window_get_transient_for (window);
++    }
++
++  return FALSE;
++}
++
++gboolean
++meta_screen_cast_is_pointer_over_excluded_window (MetaBackend *backend)
++{
++  ClutterStage *stage;
++  ClutterBackend *clutter_backend;
++  ClutterSprite *sprite;
++  ClutterActor *actor;
++
++  if (!backend || !meta_screen_cast_is_filter_enabled ())
++    return FALSE;
++
++  stage = CLUTTER_STAGE (meta_backend_get_stage (backend));
++  if (!stage)
++    return FALSE;
++
++  clutter_backend = meta_backend_get_clutter_backend (backend);
++  if (!clutter_backend)
++    return FALSE;
++
++  sprite = clutter_backend_get_pointer_sprite (clutter_backend, stage);
++  if (!sprite)
++    return FALSE;
++
++  actor = clutter_focus_get_current_actor (CLUTTER_FOCUS (sprite));
++  while (actor)
++    {
++      if (META_IS_WINDOW_ACTOR (actor))
++        return meta_window_actor_is_excluded (META_WINDOW_ACTOR (actor));
++
++      actor = clutter_actor_get_parent (actor);
++    }
++
++  return FALSE;
++}
  
  struct _MetaScreenCastMonitorStreamSrc
  {
-@@ -602,6 +688,9 @@ meta_screen_cast_monitor_stream_src_record_to_buffer (MetaScreenCastStreamSrc
+@@ -44,6 +187,7 @@ struct _MetaScreenCastMonitorStreamSrc
+ 
+   gboolean cursor_bitmap_invalid;
+   gboolean hw_cursor_inhibited;
++  gboolean last_over_excluded;
+ 
+   struct {
+     gboolean set;
+@@ -560,6 +704,7 @@ meta_screen_cast_monitor_stream_src_disable (MetaScreenCastStreamSrc *src)
+                           stage);
+ 
+   g_clear_handle_id (&monitor_src->maybe_record_idle_id, g_source_remove);
++  monitor_src->last_over_excluded = FALSE;
+ }
+ 
+ static gboolean
+@@ -602,6 +747,9 @@ meta_screen_cast_monitor_stream_src_record_to_buffer (MetaScreenCastStreamSrc
        break;
      }
  
@@ -117,7 +274,7 @@ index eea0fd1ecb..ba9ddc3f02 100644
    color_state = meta_screen_cast_stream_src_get_color_state (src);
  
    if (!clutter_stage_paint_to_buffer (stage, &logical_monitor->rect, scale,
-@@ -722,7 +811,8 @@ meta_screen_cast_monitor_stream_src_record_to_framebuffer (MetaScreenCastStreamS
+@@ -722,7 +870,8 @@ meta_screen_cast_monitor_stream_src_record_to_framebuffer (MetaScreenCastStreamS
    else
      view_scale = 1.0;
  
@@ -127,7 +284,7 @@ index eea0fd1ecb..ba9ddc3f02 100644
      goto stage_paint;
  
    outputs = meta_monitor_get_outputs (monitor);
-@@ -827,6 +917,9 @@ stage_paint:
+@@ -827,6 +976,9 @@ stage_paint:
            break;
          }
  
@@ -137,11 +294,61 @@ index eea0fd1ecb..ba9ddc3f02 100644
        force_linear = meta_debug_control_is_linear_blending_forced (debug_control);
  
        blending_color_state = clutter_color_state_get_blending (target_color_state,
+@@ -989,8 +1141,12 @@ meta_screen_cast_monitor_stream_src_set_cursor_metadata (MetaScreenCastStreamSrc
+   MetaBackend *backend = get_backend (monitor_src);
+   MetaCursorRenderer *cursor_renderer =
+     meta_backend_get_cursor_renderer (backend);
++  MetaCursorTracker *cursor_tracker =
++    meta_backend_get_cursor_tracker (backend);
++  g_autoptr (ClutterCursor) default_cursor = NULL;
+   ClutterCursor *cursor;
+   int x, y;
++  gboolean is_excluded = FALSE;
+ 
+   cursor = meta_cursor_renderer_get_cursor (cursor_renderer);
+ 
+@@ -1004,6 +1160,36 @@ meta_screen_cast_monitor_stream_src_set_cursor_metadata (MetaScreenCastStreamSrc
+ 
+   get_cursor_position (monitor_src, &x, &y);
+ 
++  if (meta_screen_cast_is_filter_enabled ())
++    {
++      is_excluded = meta_screen_cast_is_pointer_over_excluded_window (backend);
++      if (is_excluded != monitor_src->last_over_excluded)
++        {
++          monitor_src->last_over_excluded = is_excluded;
++          monitor_src->cursor_bitmap_invalid = TRUE;
++        }
++
++      if (is_excluded && cursor_tracker)
++        {
++          default_cursor = CLUTTER_CURSOR (meta_cursor_xcursor_get (CLUTTER_CURSOR_DEFAULT,
++                                                                    cursor_tracker));
++          if (default_cursor)
++            {
++              float view_scale = get_view_scale (monitor_src);
++              clutter_cursor_prepare_at (default_cursor, view_scale, x, y);
++              cursor = default_cursor;
++            }
++        }
++    }
++  else
++    {
++      if (monitor_src->last_over_excluded)
++        {
++          monitor_src->last_over_excluded = FALSE;
++          monitor_src->cursor_bitmap_invalid = TRUE;
++        }
++    }
++
+   monitor_src->last_cursor_matadata.set = TRUE;
+   monitor_src->last_cursor_matadata.x = x;
+   monitor_src->last_cursor_matadata.y = y;
 diff --git a/src/backends/meta-screen-cast-monitor-stream-src.h b/src/backends/meta-screen-cast-monitor-stream-src.h
-index 5551530137..8459bd1d79 100644
+index 5551530137..1c0370a585 100644
 --- a/src/backends/meta-screen-cast-monitor-stream-src.h
 +++ b/src/backends/meta-screen-cast-monitor-stream-src.h
-@@ -33,3 +33,9 @@ G_DECLARE_FINAL_TYPE (MetaScreenCastMonitorStreamSrc,
+@@ -33,3 +33,14 @@ G_DECLARE_FINAL_TYPE (MetaScreenCastMonitorStreamSrc,
  
  MetaScreenCastMonitorStreamSrc * meta_screen_cast_monitor_stream_src_new (MetaScreenCastMonitorStream *monitor_stream,
                                                                            GError                     **error);
@@ -151,6 +358,157 @@ index 5551530137..8459bd1d79 100644
 +gboolean meta_screen_cast_is_window_excluded (const char *wm_class,
 +                                             const char *app_id,
 +                                             const char *wm_instance);
++
++gboolean meta_screen_cast_is_meta_window_excluded (MetaWindow *window);
++
++gboolean meta_screen_cast_is_pointer_over_excluded_window (MetaBackend *backend);
++
+diff --git a/src/backends/meta-stage-private.h b/src/backends/meta-stage-private.h
+index b135717889..37371a1e23 100644
+--- a/src/backends/meta-stage-private.h
++++ b/src/backends/meta-stage-private.h
+@@ -55,6 +55,12 @@ void              meta_stage_update_cursor_overlay   (MetaStage               *s
+                                                       const graphene_matrix_t *matrix,
+                                                       const graphene_rect_t   *dst_rect);
+ 
++void              meta_stage_update_cursor_overlay_default (MetaStage               *stage,
++                                                            MetaOverlay             *overlay,
++                                                            CoglTexture             *texture,
++                                                            const graphene_matrix_t *matrix,
++                                                            const graphene_rect_t   *dst_rect);
++
+ void meta_overlay_set_visible (MetaOverlay *overlay,
+                                gboolean     is_visible);
+ 
+diff --git a/src/backends/meta-stage.c b/src/backends/meta-stage.c
+index 66b5aed5d0..3e457a9b79 100644
+--- a/src/backends/meta-stage.c
++++ b/src/backends/meta-stage.c
+@@ -24,6 +24,7 @@
+ 
+ #include "backends/meta-backend-private.h"
+ #include "backends/meta-cursor-tracker-private.h"
++#include "backends/meta-screen-cast-monitor-stream-src.h"
+ #include "clutter/clutter-mutter.h"
+ #include "meta/meta-backend.h"
+ #include "meta/meta-monitor-manager.h"
+@@ -54,6 +55,11 @@ struct _MetaOverlay
+   graphene_matrix_t transform;
+   graphene_rect_t current_rect;
+ 
++  CoglPipeline *default_pipeline;
++  CoglTexture *default_texture;
++  graphene_matrix_t default_transform;
++  graphene_rect_t default_current_rect;
++
+   GHashTable *view_states;
+ };
+ 
+@@ -81,6 +87,7 @@ meta_overlay_new (MetaStage *stage)
+   overlay = g_new0 (MetaOverlay, 1);
+   overlay->stage = stage;
+   overlay->pipeline = cogl_pipeline_new (ctx);
++  overlay->default_pipeline = cogl_pipeline_new (ctx);
+   overlay->view_states = g_hash_table_new_full (NULL, NULL, NULL, g_free);
+ 
+   return overlay;
+@@ -91,6 +98,8 @@ meta_overlay_free (MetaOverlay *overlay)
+ {
+   if (overlay->pipeline)
+     g_object_unref (overlay->pipeline);
++  if (overlay->default_pipeline)
++    g_object_unref (overlay->default_pipeline);
+   g_hash_table_unref (overlay->view_states);
+ 
+   g_free (overlay);
+@@ -187,18 +196,34 @@ meta_overlay_paint (MetaOverlay         *overlay,
+     }
+ 
+   framebuffer = clutter_paint_context_get_framebuffer (paint_context);
++
++  ClutterPaintFlag flags = clutter_paint_context_get_paint_flags (paint_context);
++  CoglPipeline *pipeline_to_draw = overlay->pipeline;
++  graphene_rect_t rect_to_draw = overlay->current_rect;
++
++  if ((flags & CLUTTER_PAINT_FLAG_SCREENCAST) &&
++      meta_screen_cast_is_filter_enabled () &&
++      meta_screen_cast_is_pointer_over_excluded_window (overlay->stage->backend))
++    {
++      if (overlay->default_texture)
++        {
++          pipeline_to_draw = overlay->default_pipeline;
++          rect_to_draw = overlay->default_current_rect;
++        }
++    }
++
+   cogl_framebuffer_draw_rectangle (framebuffer,
+-                                   overlay->pipeline,
+-                                   overlay->current_rect.origin.x,
+-                                   overlay->current_rect.origin.y,
+-                                   (overlay->current_rect.origin.x +
+-                                    overlay->current_rect.size.width),
+-                                   (overlay->current_rect.origin.y +
+-                                    overlay->current_rect.size.height));
++                                   pipeline_to_draw,
++                                   rect_to_draw.origin.x,
++                                   rect_to_draw.origin.y,
++                                   (rect_to_draw.origin.x +
++                                    rect_to_draw.size.width),
++                                   (rect_to_draw.origin.y +
++                                    rect_to_draw.size.height));
+ 
+   if (view_state)
+     {
+-      view_state->painted_rect = overlay->current_rect;
++      view_state->painted_rect = rect_to_draw;
+       view_state->has_painted_rect = TRUE;
+     }
+ }
+@@ -444,6 +469,12 @@ queue_redraw_for_cursor_overlay (MetaStage   *stage,
+ 
+           cursor_rect_to_clip (&overlay->current_rect, &clip);
+           intersect_and_queue_redraw (view, &clip);
++
++          if (overlay->default_texture)
++            {
++              cursor_rect_to_clip (&overlay->default_current_rect, &clip);
++              intersect_and_queue_redraw (view, &clip);
++            }
+         }
+     }
+ }
+@@ -473,6 +504,31 @@ meta_stage_remove_cursor_overlay (MetaStage   *stage,
+   meta_overlay_free (overlay);
+ }
+ 
++void
++meta_stage_update_cursor_overlay_default (MetaStage               *stage,
++                                          MetaOverlay             *overlay,
++                                          CoglTexture             *texture,
++                                          const graphene_matrix_t *matrix,
++                                          const graphene_rect_t   *dst_rect)
++{
++  if (overlay->default_texture != texture)
++    {
++      overlay->default_texture = texture;
++      if (texture)
++        cogl_pipeline_set_layer_texture (overlay->default_pipeline, 0, texture);
++      else
++        cogl_pipeline_set_layer_texture (overlay->default_pipeline, 0, NULL);
++    }
++
++  if (!graphene_matrix_equal_fast (matrix, &overlay->default_transform))
++    {
++      cogl_pipeline_set_layer_matrix (overlay->default_pipeline, 0, matrix);
++      graphene_matrix_init_from_matrix (&overlay->default_transform, matrix);
++    }
++
++  overlay->default_current_rect = *dst_rect;
++}
++
+ void
+ meta_stage_update_cursor_overlay (MetaStage               *stage,
+                                   MetaOverlay             *overlay,
 diff --git a/src/compositor/meta-background-content.c b/src/compositor/meta-background-content.c
 index 50abb23739..2d4f5c678d 100644
 --- a/src/compositor/meta-background-content.c
@@ -165,8 +523,21 @@ index 50abb23739..2d4f5c678d 100644
      mtk_region_intersect (region, self->unobscured_region);
  
    /* region is now in actor space */
+diff --git a/src/compositor/meta-window-actor-private.h b/src/compositor/meta-window-actor-private.h
+index a2e39ae3b1..6ba1f7f9a8 100644
+--- a/src/compositor/meta-window-actor-private.h
++++ b/src/compositor/meta-window-actor-private.h
+@@ -95,6 +95,8 @@ MetaWindowActor *meta_window_actor_from_window (MetaWindow *window);
+ META_EXPORT_TEST
+ MetaWindowActor *meta_window_actor_from_actor (ClutterActor *actor);
+ 
++gboolean meta_window_actor_is_excluded (MetaWindowActor *self);
++
+ void meta_window_actor_set_geometry_scale (MetaWindowActor *window_actor,
+                                            int              geometry_scale);
+ 
 diff --git a/src/compositor/meta-window-actor.c b/src/compositor/meta-window-actor.c
-index f09659b8ea..df8336ffeb 100644
+index f09659b8ea..117135c78c 100644
 --- a/src/compositor/meta-window-actor.c
 +++ b/src/compositor/meta-window-actor.c
 @@ -24,6 +24,7 @@
@@ -177,29 +548,16 @@ index f09659b8ea..df8336ffeb 100644
  #include "compositor/compositor-private.h"
  #include "compositor/meta-shaped-texture-private.h"
  #include "compositor/meta-surface-actor.h"
-@@ -191,6 +192,42 @@ meta_window_actor_unmap (ClutterActor *actor)
+@@ -191,6 +192,29 @@ meta_window_actor_unmap (ClutterActor *actor)
    update_is_effectively_visible (window_actor);
  }
  
-+static gboolean
++gboolean
 +meta_window_actor_is_excluded (MetaWindowActor *self)
 +{
 +  MetaWindowActorPrivate *priv = meta_window_actor_get_instance_private (self);
-+  MetaWindow *window = priv->window;
 +
-+  while (window)
-+    {
-+      const char *wm_class = meta_window_get_wm_class (window);
-+      const char *app_id = meta_window_get_gtk_application_id (window);
-+      const char *wm_instance = meta_window_get_wm_class_instance (window);
-+
-+      if (meta_screen_cast_is_window_excluded (wm_class, app_id, wm_instance))
-+        return TRUE;
-+
-+      window = meta_window_get_transient_for (window);
-+    }
-+
-+  return FALSE;
++  return meta_screen_cast_is_meta_window_excluded (priv ? priv->window : NULL);
 +}
 +
 +static void
@@ -220,7 +578,7 @@ index f09659b8ea..df8336ffeb 100644
  static void
  meta_window_actor_class_init (MetaWindowActorClass *klass)
  {
-@@ -204,6 +241,7 @@ meta_window_actor_class_init (MetaWindowActorClass *klass)
+@@ -204,6 +228,7 @@ meta_window_actor_class_init (MetaWindowActorClass *klass)
  
    actor_class->map = meta_window_actor_map;
    actor_class->unmap = meta_window_actor_unmap;

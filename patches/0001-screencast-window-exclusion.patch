@@ -1,130 +1,205 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2026
-From: Sofyan Pujas <sofyanox12@users.noreply.github.com>
-Date: Thu, 17 Sep 2026 00:00:00 +0800
-Subject: [PATCH] screen-cast: Dynamic JSON-based window actor buffer exclusion for monitor screencast
-
-Reads runtime state dynamically from ~/.config/muscst/state.json.
-Respects the "enabled" boolean flag to dynamically toggle buffer exclusion
-without requiring a restart of GNOME Shell. Preserves hardware
-cursor rendering on screencast streams.
----
- src/backends/meta-screen-cast-monitor-stream-src.c | 64 +++++++++++++++++++++-
- src/compositor/meta-window-actor.c                 | 21 ++++++++++++++
- 2 files changed, 85 insertions(+)
-
+diff --git a/clutter/clutter/clutter-paint-context.h b/clutter/clutter/clutter-paint-context.h
+index 321c86e..db7bceb 100644
+--- a/clutter/clutter/clutter-paint-context.h
++++ b/clutter/clutter/clutter-paint-context.h
+@@ -34,6 +34,7 @@ typedef enum _ClutterPaintFlag
+   CLUTTER_PAINT_FLAG_NO_CURSORS = 1 << 0,
+   CLUTTER_PAINT_FLAG_FORCE_CURSORS = 1 << 1,
+   CLUTTER_PAINT_FLAG_CLEAR = 1 << 2,
++  CLUTTER_PAINT_FLAG_SCREENCAST = 1 << 3,
+ } ClutterPaintFlag;
+ 
+ #define CLUTTER_TYPE_PAINT_CONTEXT (clutter_paint_context_get_type ())
 diff --git a/src/backends/meta-screen-cast-monitor-stream-src.c b/src/backends/meta-screen-cast-monitor-stream-src.c
-index a1b2c3d..e4f5g6h 100644
+index eea0fd1..ba9ddc3 100644
 --- a/src/backends/meta-screen-cast-monitor-stream-src.c
 +++ b/src/backends/meta-screen-cast-monitor-stream-src.c
-@@ -34,6 +34,10 @@
- #include "backends/meta-stage-view.h"
+@@ -37,6 +37,92 @@
  #include "clutter/clutter-mutter.h"
- #include "cogl/cogl.h"
+ #include "core/boxes-private.h"
+ #include "core/meta-debug-control-private.h"
 +#include <glib.h>
 +#include <glib/gstdio.h>
-+#include <json-glib/json-glib.h>
-+#include <stdio.h>
- 
- struct _MetaScreenCastMonitorStreamSrc
- {
-@@ -43,6 +47,65 @@ struct _MetaScreenCastMonitorStreamSrc
-   MetaStageWatch *stage_watch;
- };
- 
++
 +/* Dynamic window actor buffer exclusion check for screencast */
-+gboolean
-+meta_screen_cast_is_window_excluded (const char *wm_class, const char *app_id)
++static GHashTable *exclude_set = NULL;
++static gint64 last_mtime = 0;
++static gboolean filter_enabled = TRUE;
++static char *config_path = NULL;
++
++static void
++reload_config_if_needed (void)
 +{
-+  static GHashTable *exclude_set = NULL;
-+  static gint64 last_mtime = 0;
-+  static gboolean filter_enabled = TRUE;
-+  static char *config_path = NULL;
 +  GStatBuf st;
 +
 +  if (G_UNLIKELY (!config_path))
 +    config_path = g_build_filename (g_get_user_config_dir (), "muscst", "state.json", NULL);
 +
 +  if (g_stat (config_path, &st) != 0)
-+    return FALSE;
++    return;
 +
 +  if (st.st_mtime != last_mtime)
 +    {
-+      JsonParser *parser = json_parser_new ();
++      gchar *contents = NULL;
 +      last_mtime = st.st_mtime;
 +
-+      if (json_parser_load_from_file (parser, config_path, NULL))
++      if (g_file_get_contents (config_path, &contents, NULL, NULL))
 +        {
-+          JsonNode *root = json_parser_get_root (parser);
-+          if (JSON_NODE_HOLDS_OBJECT (root))
++          if (strstr (contents, "\"enabled\": false") || strstr (contents, "\"enabled\":false"))
++            filter_enabled = FALSE;
++          else if (strstr (contents, "\"enabled\": true") || strstr (contents, "\"enabled\":true"))
++            filter_enabled = TRUE;
++
++          if (!exclude_set)
++            exclude_set = g_hash_table_new_full (g_str_hash, g_str_equal, g_free, NULL);
++          g_hash_table_remove_all (exclude_set);
++
++          char *p = strstr (contents, "\"exclude_classes\"");
++          if (p)
 +            {
-+              JsonObject *obj = json_node_get_object (root);
-+              if (json_object_has_member (obj, "enabled"))
-+                filter_enabled = json_object_get_boolean_member (obj, "enabled");
-+
-+              if (!exclude_set)
-+                exclude_set = g_hash_table_new_full (g_str_hash, g_str_equal, g_free, NULL);
-+              g_hash_table_remove_all (exclude_set);
-+
-+              if (json_object_has_member (obj, "exclude_classes"))
++              char *start_b = strchr (p, '[');
++              char *end_b = start_b ? strchr (start_b, ']') : NULL;
++              if (start_b && end_b)
 +                {
-+                  JsonArray *arr = json_object_get_array_member (obj, "exclude_classes");
-+                  guint len = json_array_get_length (arr);
-+                  for (guint i = 0; i < len; i++)
++                  char *cur = start_b + 1;
++                  while (cur < end_b)
 +                    {
-+                      const char *item = json_array_get_string_element (arr, i);
-+                      if (item && *item)
-+                        g_hash_table_insert (exclude_set, g_strdup (item), GINT_TO_POINTER (1));
++                      char *q1 = strchr (cur, '"');
++                      if (!q1 || q1 >= end_b)
++                        break;
++                      char *q2 = strchr (q1 + 1, '"');
++                      if (!q2 || q2 > end_b)
++                        break;
++                      if (q2 > q1 + 1)
++                        {
++                          char *item = g_strndup (q1 + 1, q2 - (q1 + 1));
++                          g_hash_table_insert (exclude_set, item, GINT_TO_POINTER (1));
++                        }
++                      cur = q2 + 1;
 +                    }
 +                }
 +            }
++          g_free (contents);
 +        }
-+      g_object_unref (parser);
 +    }
++}
 +
++gboolean
++meta_screen_cast_is_filter_enabled (void)
++{
++  reload_config_if_needed ();
++  return filter_enabled && exclude_set && g_hash_table_size (exclude_set) > 0;
++}
++
++gboolean
++meta_screen_cast_is_window_excluded (const char *wm_class,
++                                     const char *app_id,
++                                     const char *wm_instance)
++{
++  reload_config_if_needed ();
 +  if (!filter_enabled || !exclude_set)
 +    return FALSE;
 +
 +  return ((wm_class && g_hash_table_contains (exclude_set, wm_class)) ||
-+          (app_id && g_hash_table_contains (exclude_set, app_id)));
++          (app_id && g_hash_table_contains (exclude_set, app_id)) ||
++          (wm_instance && g_hash_table_contains (exclude_set, wm_instance)));
 +}
-+
- G_DEFINE_TYPE (MetaScreenCastMonitorStreamSrc,
-                meta_screen_cast_monitor_stream_src,
-                META_TYPE_SCREEN_CAST_STREAM_SRC)
- diff --git a/src/compositor/meta-window-actor.c b/src/compositor/meta-window-actor.c
- index 9876543..1234567 100644
- --- a/src/compositor/meta-window-actor.c
- +++ b/src/compositor/meta-window-actor.c
-@@ -35,6 +35,9 @@
- #include "core/window-private.h"
- #include "meta/meta-enum-types.h"
  
-+/* Prototype for exclusion check defined in monitor stream */
-+gboolean meta_screen_cast_is_window_excluded (const char *wm_class, const char *app_id);
-+
- struct _MetaWindowActorPrivate
+ struct _MetaScreenCastMonitorStreamSrc
  {
-   MetaWindow *window;
-@@ -450,6 +453,22 @@ meta_window_actor_paint (ClutterActor        *actor,
- {
-   MetaWindowActor *self = META_WINDOW_ACTOR (actor);
-   MetaWindowActorPrivate *priv = meta_window_actor_get_instance_private (self);
+@@ -602,6 +688,9 @@ meta_screen_cast_monitor_stream_src_record_to_buffer (MetaScreenCastStreamSrc
+       break;
+     }
+ 
++  if (meta_screen_cast_is_filter_enabled ())
++    paint_flags |= CLUTTER_PAINT_FLAG_SCREENCAST;
 +
-+  /* If painting for a screencast FBO, inspect whether this actor is excluded */
-+  if (clutter_paint_context_is_screencast (paint_context))
+   color_state = meta_screen_cast_stream_src_get_color_state (src);
+ 
+   if (!clutter_stage_paint_to_buffer (stage, &logical_monitor->rect, scale,
+@@ -722,7 +811,8 @@ meta_screen_cast_monitor_stream_src_record_to_framebuffer (MetaScreenCastStreamS
+   else
+     view_scale = 1.0;
+ 
+-  if (paint_phase == META_SCREEN_CAST_PAINT_PHASE_DETACHED)
++  if (paint_phase == META_SCREEN_CAST_PAINT_PHASE_DETACHED ||
++      meta_screen_cast_is_filter_enabled ())
+     goto stage_paint;
+ 
+   outputs = meta_monitor_get_outputs (monitor);
+@@ -827,6 +917,9 @@ stage_paint:
+           break;
+         }
+ 
++      if (meta_screen_cast_is_filter_enabled ())
++        paint_flags |= CLUTTER_PAINT_FLAG_SCREENCAST;
++
+       force_linear = meta_debug_control_is_linear_blending_forced (debug_control);
+ 
+       blending_color_state = clutter_color_state_get_blending (target_color_state,
+diff --git a/src/backends/meta-screen-cast-monitor-stream-src.h b/src/backends/meta-screen-cast-monitor-stream-src.h
+index 5551530..8459bd1 100644
+--- a/src/backends/meta-screen-cast-monitor-stream-src.h
++++ b/src/backends/meta-screen-cast-monitor-stream-src.h
+@@ -33,3 +33,9 @@ G_DECLARE_FINAL_TYPE (MetaScreenCastMonitorStreamSrc,
+ 
+ MetaScreenCastMonitorStreamSrc * meta_screen_cast_monitor_stream_src_new (MetaScreenCastMonitorStream *monitor_stream,
+                                                                           GError                     **error);
++
++gboolean meta_screen_cast_is_filter_enabled (void);
++
++gboolean meta_screen_cast_is_window_excluded (const char *wm_class,
++                                             const char *app_id,
++                                             const char *wm_instance);
+diff --git a/src/compositor/meta-window-actor.c b/src/compositor/meta-window-actor.c
+index f09659b..99b7ad3 100644
+--- a/src/compositor/meta-window-actor.c
++++ b/src/compositor/meta-window-actor.c
+@@ -24,6 +24,7 @@
+ #include <string.h>
+ 
+ #include "backends/meta-screen-cast-window.h"
++#include "backends/meta-screen-cast-monitor-stream-src.h"
+ #include "compositor/compositor-private.h"
+ #include "compositor/meta-shaped-texture-private.h"
+ #include "compositor/meta-surface-actor.h"
+@@ -191,6 +192,31 @@ meta_window_actor_unmap (ClutterActor *actor)
+   update_is_effectively_visible (window_actor);
+ }
+ 
++static void
++meta_window_actor_paint (ClutterActor        *actor,
++                         ClutterPaintContext *paint_context)
++{
++  ClutterPaintFlag flags = clutter_paint_context_get_paint_flags (paint_context);
++
++  if (flags & CLUTTER_PAINT_FLAG_SCREENCAST)
 +    {
++      MetaWindowActor *self = META_WINDOW_ACTOR (actor);
++      MetaWindowActorPrivate *priv = meta_window_actor_get_instance_private (self);
++
 +      if (priv->window)
 +        {
 +          const char *wm_class = meta_window_get_wm_class (priv->window);
 +          const char *app_id = meta_window_get_gtk_application_id (priv->window);
++          const char *wm_instance = meta_window_get_wm_class_instance (priv->window);
 +
-+          if (meta_screen_cast_is_window_excluded (wm_class, app_id))
++          if (meta_screen_cast_is_window_excluded (wm_class, app_id, wm_instance))
 +            return;
 +        }
 +    }
 +
-   CLUTTER_ACTOR_CLASS (meta_window_actor_parent_class)->paint (actor, paint_context);
- }
++  CLUTTER_ACTOR_CLASS (meta_window_actor_parent_class)->paint (actor, paint_context);
++}
++
+ static void
+ meta_window_actor_class_init (MetaWindowActorClass *klass)
+ {
+@@ -204,6 +230,7 @@ meta_window_actor_class_init (MetaWindowActorClass *klass)
  
--- 
-2.48.1
+   actor_class->map = meta_window_actor_map;
+   actor_class->unmap = meta_window_actor_unmap;
++  actor_class->paint = meta_window_actor_paint;
+ 
+   klass->get_scanout_candidate = meta_window_actor_real_get_scanout_candidate;
+   klass->assign_surface_actor = meta_window_actor_real_assign_surface_actor;

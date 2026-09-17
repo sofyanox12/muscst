@@ -78,7 +78,7 @@ pkgbase = mutter-muscst
 	source = bin/muscst
 	source = config/state.json.example
 	sha256sums = SKIP
-	sha256sums = f3f20e466e5435895b569e6a1eda2f4300fbf68e859e48703f4874a6d316f16d
+	sha256sums = 8a04b981a9ce6bb1f460f4056672fc3844c25116b76d4e5c4f4b7045e6107be1
 	sha256sums = 5d571159bf2b0f91e6abe461c823d82008b78fc5144cb327e9e2db961b478149
 	sha256sums = 78850cad3298011aadb7c50416d4fd88182790442e6f380b8c758423ae70bf3d
 

@@ -1,0 +1,12 @@
+FROM archlinux:base-devel
+
+RUN pacman -Syu --noconfirm && \
+    pacman -S --needed --noconfirm sudo git meson gobject-introspection glib2-devel wayland-protocols sysprof
+
+RUN useradd -m -u 1000 builduser && \
+    echo "builduser ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
+
+USER builduser
+WORKDIR /workspace
+
+CMD ["makepkg", "-s", "--noconfirm", "--clean"]

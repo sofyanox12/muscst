@@ -87,8 +87,10 @@ muscst/
 ├── patches/
 │   └── 0001-screencast-window-exclusion.patch # C Patch for Mutter screencast buffer exclusion
 ├── scripts/
-│   ├── build.sh                           # Isolated build script via makepkg
-│   ├── install.sh                         # Developer installation helper with backup
+│   ├── build-isolated.sh                  # Isolated build via Docker container
+│   ├── test-isolated.sh                   # Headless test runner in Docker
+│   ├── build.sh                           # Non-invasive build via makepkg
+│   ├── install.sh                         # Developer installation helper with backup (VM only)
 │   └── rollback.sh                        # Upstream Mutter recovery script
 ├── .github/workflows/ci.yml               # Automated CI for linting and packaging
 ├── CONTRIBUTING.md                        # Contribution guidelines and coding standards
@@ -101,20 +103,24 @@ muscst/
 ## Development & Testing Workflow
 
 > [!IMPORTANT]
-> Do not attempt to install or replace your desktop compositor on production systems.
+> Do not attempt to install or replace your desktop compositor on your primary host machine. Mutter is the core GNOME display server; crashes or ABI issues will break your session.
 
-To verify compilation in an isolated build directory without modifying host system libraries:
+### 1. Isolated Compilation (Recommended)
+Compile the package inside an ephemeral Arch Linux container without polluting host packages:
 
 ```bash
-git clone https://github.com/sofyanox12/muscst.git
-cd muscst
-./scripts/build.sh
+./scripts/build-isolated.sh
 ```
 
-This compiles Mutter with the screencast buffer exclusion patch locally using `makepkg`.
+### 2. Isolated Headless Testing
+Test package installation, CLI controller, and Mutter's Wayland compositor headless launch safely:
 
-### Developer Testing Environment
-If testing within a dedicated Arch Linux development virtual machine:
+```bash
+./scripts/test-isolated.sh
+```
+
+### 3. Dedicated VM Testing (Full GNOME Integration)
+If testing visual screencasts within a dedicated Arch Linux development virtual machine (QEMU/KVM):
 
 ```bash
 ./scripts/install.sh

@@ -1,0 +1,12 @@
+FROM archlinux:latest
+
+RUN pacman -Syu --noconfirm && \
+    pacman -S --needed --noconfirm sudo procps dbus pipewire python python-argcomplete python-gobject mesa
+
+RUN useradd -m -u 1000 testuser && \
+    echo "testuser ALL=(ALL) NOPASSWD: ALL" >> /etc/sudoers
+
+USER testuser
+WORKDIR /workspace
+
+CMD ["/workspace/scripts/run-test.sh"]
